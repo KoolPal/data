@@ -3,12 +3,7 @@ name: iCarry Tracking Scraper
 on:
   schedule:
     - cron: "38 * * * *"
-  push:
-    branches: [ master ]
-  pull_request:
-    branches:
   workflow_dispatch:
-    branches:
     inputs:
       tracking_number:
         description: 'Tracking number to scrape'
@@ -17,207 +12,111 @@ on:
 
 jobs:
   build:
-    env:
-      PY_COLORS: "1"
-      PYTHONUNBUFFERED: "1"
-      DISPLAY: ":99.0"
-      
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        os: [ubuntu-latest]
-        python-version: ["3.13"]
-
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     
     steps:
     - uses: actions/checkout@v4
     
-    - name: Set up Python ${{ matrix.python-version }}
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: ${{ matrix.python-version }}
+        python-version: "3.13"
     
-    - name: Set Locale
+    - name: Install Chrome and Xvfb
       run: |
-        sudo apt-get update
-        sudo apt-get install -y tzdata locales xvfb
-        sudo locale-gen en_US.UTF-8
-        sudo localectl set-locale LANG="en_US.UTF-8"
-        export LANG="en_US.UTF-8"
-        sudo update-locale
-        locale -a
-        locale
-        locale -c -k LC_NUMERIC
-        localectl status
+        sudo apt update
+        sudo apt install -y xvfb fonts-liberation libasound2 libatk-bridge2.0-0 libatspi2.0-0 libdrm2 libgbm1 libgtk-3-0 libnspr4 libnss3 libu2f-udev libvulkan1 libxcomposite1 libxdamage1 libxfixes3 libxkbcommon0 libxrandr2 xdg-utils
+        wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+        sudo dpkg -i google-chrome-stable_current_amd64.deb
+        sudo apt install -y -f
     
-    - name: Install dependencies
+    - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install --upgrade pip
-        pip install --upgrade wheel
         pip install seleniumbase>=4.22.5
-        pip install --upgrade pyautogui
-        pip install --upgrade python-xlib
-        pip install undetected-chromedriver
-    
-    - name: Check the console scripts interface
-      run: |
-        seleniumbase
-        sbase
+        pip install cloudscraper
     
     - name: Install chromedriver
       run: |
         seleniumbase install chromedriver
-    
-    - name: Make sure pytest is working
+        
+    - name: Start Xvfb
       run: |
-        echo "def test_1(): pass" > nothing.py
-        pytest nothing.py --uc
-    
-    - name: Create Python script
+        Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
+        echo "DISPLAY=:99.0" >> $GITHUB_ENV
+        
+    - name: Create script
       run: |
         cat > scrape_tracking.py << 'EOL'
         from seleniumbase import Driver
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
-        from selenium.common.exceptions import TimeoutException
         import time
-        import re
         import os
         import argparse
+        from datetime import datetime, timezone
 
-        def extract_content(content, pattern):
-            match = re.search(pattern, content)
-            return match.group(1) if match else None
+        def get_current_utc():
+            return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SS')
 
-        def create_driver(debug=False):
-            return Driver(
-                browser="chrome",
-                uc=True,
-                headless2=not debug,  # False when debug=True
-                incognito=True,
-                agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.5615.138 Safari/537.36 AVG/112.0.21002.139",
-                do_not_track=True,
-                undetectable=True
-            )
-
-        def wait_for_cloudflare(driver, debug=False):
-            try:
-                if debug:
-                    print("Checking for Cloudflare challenge...")
-                time.sleep(20)  # Fixed wait as per working example
-                if debug:
-                    print("Wait completed")
-                
-            except Exception as e:
-                if debug:
-                    print(f"Error during wait: {str(e)}")
-                raise
-
-        def scrape_tracking_info(tracking_number, debug=False):
-            driver = None
-            max_retries = 3
-            current_retry = 0
-            
-            while current_retry < max_retries:
-                try:
-                    if debug:
-                        print(f"Attempt {current_retry + 1} of {max_retries}")
-                    
-                    driver = create_driver(debug)
-                    
-                    url = f"https://www.icarry.in/track-shipment?a={tracking_number}"
-                    if debug:
-                        print(f"Navigating to: {url}")
-                        print("Driver configuration:")
-                        print(f"User Agent: {driver.execute_script('return navigator.userAgent;')}")
-                    
-                    driver.get(url)
-                    wait_for_cloudflare(driver, debug)
-                    
-                    if debug:
-                        print("Waiting for status element...")
-                    
-                    wait = WebDriverWait(driver, 20)
-                    status_element = wait.until(
-                        EC.presence_of_element_located((By.XPATH, "//b[contains(text(),'Status:')]/following-sibling::span"))
-                    )
-                    
-                    if debug:
-                        print("Status element found!")
-                    
-                    page_content = driver.page_source
-                    
-                    if "Shipment Tracking" not in page_content:
-                        raise Exception("Invalid page content - missing expected elements")
-                    
-                    courier_name = extract_content(page_content, r'Courier Name\s*:</td>\s*<td>(.*?)</td>')
-                    status = extract_content(page_content, r'Status:\s*</b>\s*<span[^>]*>(.*?)</span>')
-                    estimated_delivery = extract_content(page_content, r'Estimated Delivery:\s*</b>\s*<span[^>]*>(.*?)</span>')
-                    destination = extract_content(page_content, r'Destination:\s*</b>\s*<span[^>]*>(.*?)</span>')
-                    
-                    if not any([courier_name, status, estimated_delivery, destination]):
-                        raise Exception("Failed to extract tracking information")
-                    
-                    print("\n=== Tracking Results ===")
-                    print(f"Tracking Number: {tracking_number}")
-                    print(f"Courier: {courier_name}")
-                    print(f"Status: {status}")
-                    print(f"Estimated Delivery: {estimated_delivery}")
-                    print(f"Destination: {destination}")
-                    
-                    tracking_rows = driver.find_elements(By.XPATH, "//table[.//b[contains(text(),'Date')]]/tbody/tr")
-                    
-                    print("\n=== Tracking Timeline ===")
-                    for row in tracking_rows:
-                        cells = row.find_elements(By.TAG_NAME, "td")
-                        if len(cells) >= 3:
-                            print(f"{cells[0].text} | {cells[1].text} | {cells[2].text}")
-                    
-                    break
-                    
-                except Exception as e:
-                    current_retry += 1
-                    if debug:
-                        print(f"Error occurred: {str(e)}")
-                        if driver:
-                            try:
-                                print("Browser details:")
-                                print(f"Current URL: {driver.current_url}")
-                                print(f"Page source preview: {driver.page_source[:500]}...")
-                            except:
-                                print("Could not get browser details")
-                    
-                    if current_retry < max_retries:
-                        print(f"Retrying... ({current_retry + 1}/{max_retries})")
-                        time.sleep(5)
-                    else:
-                        print("Maximum retries reached. Failed to scrape tracking information.")
-                        raise
-                
-                finally:
-                    if driver:
-                        if debug:
-                            print("Closing browser...")
-                        try:
-                            driver.quit()
-                        except:
-                            pass
-
-        if __name__ == "__main__":
+        def main():
             parser = argparse.ArgumentParser()
-            parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+            parser.add_argument('--debug', action='store_true')
             args = parser.parse_args()
             
+            print(f"Current Date and Time (UTC): {get_current_utc()}")
+            print(f"Current User's Login: {os.getenv('GITHUB_ACTOR', 'KoolPal')}")
+            
             tracking_number = os.getenv('TRACKING_NUMBER', '347720741487')
-            scrape_tracking_info(tracking_number, debug=args.debug)
+            url = f"https://www.icarry.in/track-shipment?a={tracking_number}"
+            
+            if args.debug:
+                print("Creating driver...")
+            
+            driver = Driver(
+                uc=True,
+                headed=False,
+                agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.5615.138 Safari/537.36",
+                block_images=True,
+                mobile=False,
+                chromium_arg="--no-sandbox"
+            )
+            
+            try:
+                if args.debug:
+                    print(f"Navigating to {url}")
+                
+                driver.get(url)
+                
+                if args.debug:
+                    print("Waiting for page load...")
+                
+                time.sleep(20)
+                
+                if args.debug:
+                    print("Getting page source...")
+                
+                content = driver.page_source
+                print("\nPage content preview:")
+                print(content[:500])
+                
+            except Exception as e:
+                print(f"Error: {str(e)}")
+                raise
+            
+            finally:
+                if args.debug:
+                    print("Closing driver...")
+                driver.quit()
+
+        if __name__ == "__main__":
+            main()
         EOL
 
     - name: Run scraper
       env:
+        DISPLAY: ":99.0"
         TRACKING_NUMBER: ${{ github.event.inputs.tracking_number || '347720741487' }}
       run: |
         python -u scrape_tracking.py --debug
