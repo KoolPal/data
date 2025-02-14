@@ -90,15 +90,8 @@ jobs:
 
     - name: Start Xvfb
       run: |
-        # Start virtual display
         Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
-        sleep 3  # Give Xvfb time to start
-        
-        # Clear any existing Chrome instances
-        killall chrome || true
-        killall chromium || true
-        
-        # Verify display is working
+        sleep 3
         echo "DISPLAY=$DISPLAY"
         xdpyinfo > /dev/null 2>&1 || echo "Failed to query display info"
 
@@ -110,7 +103,6 @@ jobs:
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.common.exceptions import TimeoutException
-        import undetected_chromedriver as uc
         import time
         import re
         import os
@@ -121,25 +113,27 @@ jobs:
             return match.group(1) if match else None
 
         def create_driver(debug=False):
-            options = uc.ChromeOptions()
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--window-size=1920,1080')
+            arguments = [
+                '--no-sandbox',
+                '--disable-gpu',
+                '--disable-dev-shm-usage',
+                '--window-size=1920,1080',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-blink-features',
+                f'user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+            ]
             
             if not debug:
-                options.add_argument('--headless')
+                arguments.append('--headless')
             
-            options.add_argument('--disable-blink-features=AutomationControlled')
-            options.add_argument('--disable-blink-features')
-            options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36')
-            
-            return Driver(uc=True, 
-                        options=options,
-                        incognito=True,
+            return Driver(uc=True,
                         headless=not debug,
-                        servername='127.0.0.1',
-                        port=9222)
+                        agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                        incognito=True,
+                        undetectable=True,
+                        headed=debug,
+                        browser='chrome',
+                        chromium_arg=' '.join(arguments))
 
         def wait_for_cloudflare(driver, debug=False):
             try:
@@ -147,7 +141,7 @@ jobs:
                     print("Checking for Cloudflare challenge...")
                 
                 # Wait for potential Cloudflare challenge to pass
-                for _ in range(30):  # 30 seconds max wait
+                for _ in range(30):
                     if "challenge-platform" in driver.page_source or "cf-" in driver.page_source:
                         if debug:
                             print("Cloudflare detected, waiting...")
@@ -179,6 +173,9 @@ jobs:
                     url = f"https://www.icarry.in/track-shipment?a={tracking_number}"
                     if debug:
                         print(f"Navigating to: {url}")
+                        print("Driver configuration:")
+                        print(f"User Agent: {driver.execute_script('return navigator.userAgent;')}")
+                        print(f"Window size: {driver.execute_script('return [window.innerWidth, window.innerHeight];')}")
                     
                     driver.get(url)
                     wait_for_cloudflare(driver, debug)
@@ -222,16 +219,20 @@ jobs:
                         if len(cells) >= 3:
                             print(f"{cells[0].text} | {cells[1].text} | {cells[2].text}")
                     
-                    break  # Success - exit retry loop
+                    break
                     
                 except Exception as e:
                     current_retry += 1
                     if debug:
                         print(f"Error occurred: {str(e)}")
                         if driver:
-                            print(f"Driver capabilities: {driver.capabilities}")
-                            print(f"Current URL: {driver.current_url}")
-                            print(f"Page source preview: {driver.page_source[:500]}...")
+                            try:
+                                print("Browser details:")
+                                print(f"User Agent: {driver.execute_script('return navigator.userAgent;')}")
+                                print(f"Current URL: {driver.current_url}")
+                                print(f"Page source preview: {driver.page_source[:500]}...")
+                            except:
+                                print("Could not get browser details")
                     
                     if current_retry < max_retries:
                         print(f"Retrying... ({current_retry + 1}/{max_retries})")
