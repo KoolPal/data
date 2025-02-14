@@ -22,52 +22,61 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        pip install --upgrade pip
+        pip install --upgrade wheel
         pip install seleniumbase>=4.22.5
+        pip install --upgrade pyautogui
+        pip install --upgrade python-xlib
         pip install undetected-chromedriver
-        pip install cloudscraper
+
+    - name: Install Chrome
+      run: |
+        sudo apt install google-chrome-stable
+
+    - name: Check the console scripts interface
+      run: |
+        seleniumbase
+        sbase
+
+    - name: Install chromedriver
+      run: |
+        seleniumbase install chromedriver
+
+    - name: Make sure pytest is working
+      run: |
+        echo "def test_1(): pass" > nothing.py
+        pytest nothing.py --uc
 
     - name: Create script
       run: |
         cat > scraper.py << 'EOL'
         from seleniumbase import Driver
-        from datetime import datetime, timezone
         import time
         import os
-        import argparse
 
-        def get_current_utc():
-            return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        driver = Driver(
+            browser="chrome",
+            uc=True,
+            headless2=False,
+            incognito=True,
+            agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.5615.138 Safari/537.36 AVG/112.0.21002.139",
+            do_not_track=True,
+            undetectable=True
+        )
 
-        def main():
-            parser = argparse.ArgumentParser()
-            parser.add_argument('--debug', action='store_true')
-            args = parser.parse_args()
+        tracking_number = os.getenv('TRACKING_NUMBER', '347720741487')
+        url = f"https://www.icarry.in/track-shipment?a={tracking_number}"
 
-            print(f"Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted): {get_current_utc()}")
-            print(f"Current User's Login: {os.getenv('GITHUB_ACTOR', 'KoolPal')}")
-
-            tracking_number = os.getenv('TRACKING_NUMBER', '347720741487')
-            url = f"https://www.icarry.in/track-shipment?a={tracking_number}"
-            
-            driver = Driver(
-                uc=True,
-                undetectable=True,
-                headless2=False
-            )
-
-            try:
-                driver.get(url)
-                time.sleep(20)
-                print(driver.page_source)
-            finally:
-                driver.quit()
-
-        if __name__ == "__main__":
-            main()
+        try:
+            driver.get(url)
+            time.sleep(20)
+            print(driver.page_source)
+        finally:
+            driver.quit()
         EOL
 
     - name: Run scraper
       run: |
-        python scraper.py --debug
+        python scraper.py
       env:
         TRACKING_NUMBER: ${{ github.event.inputs.tracking_number || '347720741487' }}
